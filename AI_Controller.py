@@ -7,10 +7,10 @@ dirname = os.path.dirname(__file__)
 modelname = os.path.join(dirname, 'satellite_attitude_control')
 
 # Load the trained model
-model = SAC.load(modelname)
+model = SAC.load(modelname, costum_objects={"lr_scheduler": None})
 
 def get_control(yaw, target, angular_velocity):
-    attitude_error = np.degrees(yaw) - target
+    attitude_error = yaw - target
     if attitude_error < -180:
         attitude_error = 360 + attitude_error 
     if attitude_error > 180:
