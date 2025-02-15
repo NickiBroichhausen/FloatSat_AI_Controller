@@ -17,22 +17,28 @@ from Basilisk.utilities import RigidBodyKinematics as rbk
 import time
 
 show_plots = False
-useJitterSimple = True
+useJitterSimple = False
 useRWVoltageIO = False
 
 
 # Custom OpenAI Gym-like Environment for Basilisk
 class SatelliteEnv(gym.Env):
     def __init__(self):
-
         self.target = np.random.uniform(-180, 180)
-        # self.target = -176
 
-        # Observation space (pitch,roll,yaw,angular_velocities)
-        self.observation_space = spaces.Box(low=-180, high=180, shape=(2,), dtype=np.float32)
-        
-        # Action space (yaw torque)
-        self.action_space = spaces.Box(low=-1, high=1, shape=(1,), dtype=np.float32)
+        # Observation space (yaw[deg],angular_velocities[deg/s])
+        yaw_min, yaw_max = -180, 180  # Yaw range
+        angular_vel_min, angular_vel_max = -200, 200  # Angular velocity range
+
+        self.observation_space = spaces.Box(
+            low=np.array([yaw_min, angular_vel_min], dtype=np.float32),
+            high=np.array([yaw_max, angular_vel_max], dtype=np.float32),
+            dtype=np.float32
+        )
+
+        # Action space (yaw torque [Nm])
+        torque_min, torque_max = -0.3, 0.3
+        self.action_space = spaces.Box(low=torque_min, high=torque_max, shape=(1,), dtype=np.float32)
 
 
         # Create simulation variable names
@@ -43,7 +49,7 @@ class SatelliteEnv(gym.Env):
         self.scSim = SimulationBaseClass.SimBaseClass()
 
         # set the simulation time variable used later on
-        simulationTime = macros.sec2nano(1.)
+        simulationTime = macros.sec2nano(0.1)
 
         #
         #  create the simulation process
@@ -51,7 +57,7 @@ class SatelliteEnv(gym.Env):
         dynProcess = self.scSim.CreateNewProcess(simProcessName)
 
         # create the dynamics task and specify the integration update time
-        self.simulationTimeStep = macros.sec2nano(0.1)   # simulation becomes unstable for higher values. idk why seems to be problem with basilisks RW
+        self.simulationTimeStep = macros.sec2nano(0.1)   # 10Hz
         dynProcess.addTask(self.scSim.CreateNewTask(simTaskName, self.simulationTimeStep))
 
         #
@@ -61,17 +67,15 @@ class SatelliteEnv(gym.Env):
         # initialize spacecraft object and set properties
         self.scObject = spacecraft.Spacecraft()
         self.scObject.ModelTag = "bsk-Sat"
-        # # define the simulation inertia
-        # I = [1., 0.04, -0.02,
-        #     -0.02, 0.02, -1.,
-        #     -0.04, 1., 0.02]
-        # I = [0.02, -1.  , -0.02,
-        #     -1.  ,  0.02,  0.04,
-        #     -0.02,  0.04,  1.  ]
-        I = [1., 0., -0.,       # TODO wtf????
+        # define the simulation inertia
+        # since we only spin around yaw and the rotation axis is aligned with principle axis, one inertia value is enough
+        Lyy = 8338962.11 # gmm^2, from the satellite model
+        I_SC = Lyy * 1e-9  # kgm^2 
+        # I_SC = 0.01285 # kgm^2 empirical
+        I = [1., 0., -0.,
             -0., 1., -0.,
-            -0., 0., 1.]
-        self.scObject.hub.mHub = 1.703  # kg - spacecraft mass
+            -0., 0., I_SC ]
+        self.scObject.hub.mHub = 2.269  # kg - spacecraft mass
         self.scObject.hub.r_BcB_B = [[0.0], [0.0], [0.0]]  # m - position vector of body-fixed point B relative to CM
         self.scObject.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
 
@@ -90,9 +94,13 @@ class SatelliteEnv(gym.Env):
             varRWModel = messaging.JitterSimple
 
         # create each RW by specifying the RW type, the spin axis gsHat, plus optional arguments
-        RW1 = rwFactory.create('Honeywell_HR16', [0, 0, 1], maxMomentum=50., Omega=20.  # RPM
-                            , RWModel=varRWModel
-                            )
+        RW1 = rwFactory.create('custom',     
+                [0, 0, 1],   # Spin axis (Z-axis)
+                RWModel=varRWModel, 
+                Js=0.0001175,  # inertia about spin axis [kg*m^2]
+                Omega_max=5000.,  # Max speed in RPM
+                u_max=0.3,  # maximum RW motor torque [??]
+            )
         # RW2 = rwFactory.create('Honeywell_HR16', [0, 1, 0], maxMomentum=50., Omega=200.  # RPM
         #                     , RWModel=varRWModel
         #                     )
@@ -287,9 +295,8 @@ class SatelliteEnv(gym.Env):
         # TODO do random initialization
         self.scObject.hub.r_CN_NInit = np.zeros(3)
         self.scObject.hub.v_CN_NInit = np.zeros(3)
-        self.scObject.hub.sigma_BNInit =  [0,0, np.random.uniform(-180, 180, 1)] # np.zeros(3) #np.random.uniform(-0.1, 0.1, 3)  # Small random orientation
-        self.scObject.hub.omega_BN_BInit = [0,0,np.random.uniform(-1, 1, 1)]  #np.zeros(3) #np.random.uniform(-0.01, 0.01, 3)  # Small random rotation rate
-
+        self.scObject.hub.sigma_BNInit =  [0,0, np.random.uniform(yaw_min, yaw_max, 1)] # deg
+        self.scObject.hub.omega_BN_BInit = [0,0,np.random.uniform(angular_vel_min* (np.pi / 180), angular_vel_max* (np.pi / 180), 1)]  # r/s
         self.last_action = 0
         self.i_angular_error = 0
 
@@ -298,7 +305,11 @@ class SatelliteEnv(gym.Env):
         #
         self.scSim.InitializeSimulation()
 
-
+    def config(self, target_deg=0, target_angular_velocity=0, bonus_reward=0, strict=False):
+        self.target_deg = target_deg
+        self.target_angular_velocity = target_angular_velocity
+        self.bonus_reward = bonus_reward
+        self.strict = strict
 
     def reset(self):
         """Reset the simulation."""
@@ -327,7 +338,7 @@ class SatelliteEnv(gym.Env):
         # print(f"action: {action}")
         # self.msgData = messaging.ArrayMotorTorqueMsgPayload()
         # self.msgData.motorTorque = [action[0] - self.last_action]
-        self.msgData.motorTorque = [action[0]*10]   # TODO map this to the actual torque
+        self.msgData.motorTorque = [action[0] * 0.01]   # Nm  # TODO why is this rescaling required?
         self.last_action = action[0]
         # self.msg = messaging.ArrayMotorTorqueMsg()
         self.msg.write(self.msgData)
@@ -356,11 +367,13 @@ class SatelliteEnv(gym.Env):
         # print(f"done: {abs(obs[0] - 100) < 1 and abs(obs[1]) < 0.01}")
         # # print wheel speed
         # print(f"wheel speed: {self.rwLogs[0].Omega[-1]}")
-        good = abs(obs[0]) < 0.5 and abs(obs[1]) < 0.1  # TODO terminate with big plus here instead of positive reward??
+        
+        good = abs(obs[0]) < self.target_deg and abs(obs[1]) < self.target_angular_velocity  # TODO terminate with big plus here instead of positive reward??
         if good:
-            reward = reward + 5
+            reward = reward + self.bonus_reward
         done = False
-        if self.iteration * self.simulationTimeStep >= macros.min2nano(1):
+        #TODO maybe in second training round punish steady state more?
+        if  self.iteration * self.simulationTimeStep >= macros.min2nano(1): # terminate after 30s or if position reached
             done = True
             # done = abs(obs[0]) < 0.5 and abs(obs[1]) < 0.1
             # reward = -10000
@@ -386,9 +399,11 @@ class SatelliteEnv(gym.Env):
         info = {}
         if True:
             info = {
-                "sigma_BN": self.snAttLog.sigma_BN[-1],
-                "time": self.iteration * self.simulationTimeStep / 1_000_000_000,
-                "target": self.target
+                "sigma_BN[deg]": self.snAttLog.sigma_BN[-1],
+                "time[s]": self.iteration * self.simulationTimeStep / 1_000_000_000,
+                "target[deg]": self.target,
+                # convert to rpm
+                "RW_speed[RPM]": self.rwLogs[0].Omega[-1] * 60 / (2 * np.pi)
             }    
             
         return obs, reward, done, info
@@ -420,9 +435,9 @@ class SatelliteEnv(gym.Env):
         # print(f"pitch: {np.degrees(pitch)}")
         # print(f"yaw: {np.degrees(yaw)}")
 
-        yaw_w = omega_BN_B[2]
-        if abs(yaw_w) > 100:   # TODO check this 100
-            yaw_w = np.copysign(100, yaw_w)
+        yaw_w = omega_BN_B[2]  * (180 / np.pi) # deg/s
+        if abs(yaw_w) > 250:  # clip exploration space, but include unexpected values
+            yaw_w = np.copysign(250, yaw_w)
 
         attitude_error = np.degrees(yaw) - self.target
         if attitude_error < -180:
@@ -458,7 +473,7 @@ class SatelliteEnv(gym.Env):
         # if attitude_error < -180:
         #     attitude_error = -(360 + attitude_error)
 
-        angular_velocity_error = abs(obs[1]) if abs(obs[1]) > 0.1 else 0  # clipping angular velocity error 
+        # angular_velocity_error = abs(obs[1]) if abs(obs[1]) > 0.1 else 0  # clipping angular velocity error 
                                                                             # as this introduces steady state error
 
         # print(f"error: {attitude_error}")
@@ -468,5 +483,26 @@ class SatelliteEnv(gym.Env):
         # steady_state_error = 0 if abs(angular_velocity_error) < 0.1 else -abs(obs[0])  # shouldnt this be when angel < 0.1???
         
         # self.i_angular_error = self.i_angular_error + abs(obs[0]) * 0.01
+
+        # alpha = 10
+        # beta = 0.01
         
-        return  -np.sqrt(abs(obs[0])) - angular_velocity_error #- self.i_angular_error  # Penalize errors
+        return  calc_angle_reward(obs[0]) + calc_angular_velocity_reward(obs[1]) #- self.i_angular_error
+
+
+def calc_angle_reward(angle_error):
+    return -(abs(angle_error) ** 0.4) * 100
+
+def calc_angular_velocity_reward(angular_velocity_error):
+    reward = -abs(angular_velocity_error ** 3)
+    # clipped_reward = reward if abs(angular_velocity_error) > 0.1 else 0
+    return reward * 0.0001
+
+
+def calc_angle_error(angle, target):
+    attitude_error = angle - target
+    if attitude_error < -180:
+        attitude_error = 360 + attitude_error 
+    if attitude_error > 180:
+        attitude_error = -(360 - attitude_error)
+    return attitude_error
