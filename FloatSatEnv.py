@@ -1,6 +1,6 @@
 
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 
 import numpy as np
 
@@ -213,7 +213,7 @@ class SatelliteEnv(gym.Env):
         self.strict = strict
         self.torque = torque
 
-    def reset(self):
+    def reset(self, seed=None):
         """Reset the simulation."""
 
         self.__init__()
@@ -227,7 +227,7 @@ class SatelliteEnv(gym.Env):
         self.scSim.InitializeSimulation()
         self.scSim.TotalSim.SingleStepProcesses()
 
-        return self._get_observation()
+        return self._get_observation(), None
 
 
     
@@ -239,6 +239,7 @@ class SatelliteEnv(gym.Env):
         # self.last_action = action[0]  # add some noise to the action
         applied_torque = self.action_queue.pop(0)
         # print(f"Applied torque: {applied_torque}")
+        # TODO add disturbance to the torque
         self.msgData.motorTorque = [applied_torque * 0.01]   # Nm  # TODO why is this rescaling required?
         
 
@@ -258,9 +259,11 @@ class SatelliteEnv(gym.Env):
         if good:
             reward = reward + self.bonus_reward
         done = False
-
-        if self.iteration * self.simulationTimeStep >= macros.min2nano(1): # terminate after 30s or if position reached
+        truncated = False
+        if abs(obs[0]) < 1 and abs(obs[1]) < 1 and abs(obs[2]) < 0.3:
             done = True
+        elif self.iteration * self.simulationTimeStep >= macros.min2nano(1): # terminate after 30s or if position reached
+            truncated = True
             
         self.iteration += 1
         self.last_angular_velocity = obs[1]
@@ -280,7 +283,7 @@ class SatelliteEnv(gym.Env):
                 "RW_speed[RPM]": self.rwLogs[0].Omega[-1] * 60 / (2 * np.pi)
             }    
             
-        return obs, reward, done, info
+        return obs, reward, done, truncated, info
     
 
     def _get_observation(self):
@@ -338,14 +341,14 @@ class SatelliteEnv(gym.Env):
 
 
 def calc_angle_reward(angle_error):
-    return -(abs(angle_error) ** 0.5) * 100
+    return -(abs(angle_error)) * 100
 
 def calc_angular_velocity_reward(angular_velocity_error):
-    reward = -abs(angular_velocity_error ** 3)
-    return reward * 0.0001
+    reward = -abs(angular_velocity_error)
+    return reward * 10
 
 def calc_torque_reward(torque_error):
-    return -abs(torque_error)**2 * 200
+    return -abs(torque_error)* 40
 
 
 def calc_angle_error(angle, target):

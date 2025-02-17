@@ -11,7 +11,7 @@ model = SAC.load("satellite_attitude_control")
 
 # Test the trained agent
 env = FloatSatEnv.SatelliteEnv()
-obs = env.reset()
+obs = env.reset()[0]
 env.config(target_deg=0.5, target_angular_velocity=0.8, bonus_reward=200)
 done = False
 
@@ -33,8 +33,8 @@ while not done:
     # action = action * 0.3 + last_action * 0.7
     actions.append(action)
     last_action = action
-    obs, reward, done, info = env.step(action)
-
+    obs, reward, done, truncated, info = env.step(action)
+    done = done or truncated
     C_BN = rbk.MRP2C(info["sigma_BN[deg]"])
     # Extract roll, pitch, yaw (Euler angles) from the DCM
     yaw = np.arctan2(C_BN[1, 0], C_BN[0, 0])  # Psi

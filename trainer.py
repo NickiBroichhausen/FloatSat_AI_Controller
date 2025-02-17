@@ -47,7 +47,7 @@ else:
     time.sleep(1)
     env.reset()
     env.config(target_deg=13, target_angular_velocity=1, strict=True, bonus_reward=0)
-    model.learn(total_timesteps=3000)
+    model.learn(total_timesteps=10000)
 
 # Save the trained model
 model.save("satellite_attitude_control")
