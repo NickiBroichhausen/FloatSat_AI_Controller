@@ -22,9 +22,17 @@ angle = []
 actions = []
 angular_velocity = []
 rw_speed = []
+last_error = 0
+last_error2 = 0
+last_action = 0
+d_angular_velocity = []
 while not done:
-    action, _states = model.predict([obs[0], obs[1]])
+    last_error = obs[0] #* 0.2 + last_error * 0.8
+    last_error2 = obs[1] #* 0.2 + last_error2 * 0.8
+    action, _states = model.predict(obs)
+    # action = action * 0.3 + last_action * 0.7
     actions.append(action)
+    last_action = action
     obs, reward, done, info = env.step(action)
 
     C_BN = rbk.MRP2C(info["sigma_BN[deg]"])
@@ -33,6 +41,7 @@ while not done:
     pitch = np.arcsin(-C_BN[2, 0])            # Theta
     roll = np.arctan2(C_BN[2, 1], C_BN[2, 2]) # Phi
     angle.append(np.degrees(yaw))
+    d_angular_velocity.append(obs[2])
     time.append(info["time[s]"])
     if info["time[s]"] < 60:
         done = False
@@ -46,7 +55,7 @@ while not done:
 
 #plot attitude
 import matplotlib.pyplot as plt
-fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+fig, axes = plt.subplots(4, 1, figsize=(8, 10), sharex=True)
 
 # First subplot: Yaw and Target
 axes[0].plot(time, angle, label="Yaw [deg]")
@@ -70,6 +79,14 @@ axes[2].set_ylabel("RW Speed (rad/s)")
 axes[2].set_title("Reaction Wheel Speed vs Time")
 axes[2].legend()
 axes[2].grid(True)
+
+
+# d_angular_velocity
+axes[3].plot(time, d_angular_velocity, label="Angular Velocity [rad/s/s]", color="b")
+axes[3].set_ylabel("Difference of Angular Velocity (rad/s)")
+axes[3].set_title("Difference of Angular Velocity vs Time")
+axes[3].legend()
+axes[3].grid(True)
 
 # Adjust layout to prevent overlap
 plt.tight_layout()
