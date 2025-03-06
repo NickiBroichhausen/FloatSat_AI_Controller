@@ -12,7 +12,7 @@ model = SAC.load("satellite_attitude_control")
 # Test the trained agent
 env = FloatSatEnv.SatelliteEnv()
 obs = env.reset()[0]
-env.config(target_deg=0.5, target_angular_velocity=0.8, bonus_reward=200)
+env.config()
 done = False
 
 target = None
@@ -30,7 +30,6 @@ while not done:
     last_error = obs[0] #* 0.2 + last_error * 0.8
     last_error2 = obs[1] #* 0.2 + last_error2 * 0.8
     action, _states = model.predict(obs)
-    # action = action * 0.3 + last_action * 0.7
     actions.append(action)
     last_action = action
     obs, reward, done, truncated, info = env.step(action)

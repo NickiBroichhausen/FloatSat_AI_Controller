@@ -31,24 +31,15 @@ class SatelliteEnv(gym.Env):
         angular_vel_min, angular_vel_max = -200, 200  # Angular velocity range
         self.history_length = 6
 
-
         # Action space (yaw torque [Nm])
         torque_min, torque_max = -0.3, 0.3
         self.action_space = spaces.Box(low=torque_min, high=torque_max, shape=(1,), dtype=np.float32)
 
-
-        # self.observation_space = spaces.Box(
-        #     low=np.array([yaw_min, angular_vel_min, angular_vel_min*2, torque_min] * self.history_length, dtype=np.float32),
-        #     high=np.array([yaw_max, angular_vel_max, angular_vel_max*2, torque_max] * self.history_length, dtype=np.float32),
-        #     dtype=np.float32
-        # )
-
         self.observation_space = spaces.Box(
-            low=np.array([yaw_min, angular_vel_min, torque_min * self.history_length] , dtype=np.float32),
-            high=np.array([yaw_max, angular_vel_max,  torque_max * self.history_length], dtype=np.float32),
+            low=np.array([yaw_min, angular_vel_min, torque_min * self.history_length, torque_min] , dtype=np.float32),
+            high=np.array([yaw_max, angular_vel_max,  torque_max * self.history_length, torque_max], dtype=np.float32),
             dtype=np.float32
         )
-
 
         # Create simulation variable names
         simTaskName = "simTask"
@@ -79,12 +70,12 @@ class SatelliteEnv(gym.Env):
         # define the simulation inertia
         # since we only spin around yaw and the rotation axis is aligned with principle axis, one inertia value is enough
         Lyy = 8338962.11 # gmm^2, from the satellite model
-        I_SC = Lyy * 1e-9  # kgm^2 
+        I_SC = Lyy * 1e-9 #* 5 # kgm^2 
         # I_SC = 0.01285 # kgm^2 empirical
         I = [1., 0., -0.,
             -0., 1., -0.,
             -0., 0., I_SC ]
-        self.scObject.hub.mHub = 2.269  # kg - spacecraft mass
+        # self.scObject.hub.mHub = 2269  # kg - spacecraft mass
         self.scObject.hub.r_BcB_B = [[0.0], [0.0], [0.0]]  # m - position vector of body-fixed point B relative to CM
         self.scObject.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
 
@@ -190,13 +181,11 @@ class SatelliteEnv(gym.Env):
         self.rwStateEffector.rwMotorCmdInMsg.subscribeTo(self.msg)
         self.msg.write(self.msgData)
 
-
-
         # Reset spacecraft state (position, velocity, attitude, etc.)
         self.scObject.hub.r_CN_NInit = np.zeros(3)
         self.scObject.hub.v_CN_NInit = np.zeros(3)
         self.scObject.hub.sigma_BNInit =  [0,0, np.random.uniform(yaw_min, yaw_max, 1)] # deg
-        self.last_angular_velocity = np.random.uniform(angular_vel_min* (np.pi / 180), angular_vel_max* (np.pi / 180))  # r/s
+        self.last_angular_velocity = 0#np.random.uniform(angular_vel_min* (np.pi / 180), angular_vel_max* (np.pi / 180))  # r/s
         self.scObject.hub.omega_BN_BInit = [0,0, self.last_angular_velocity]  # r/s
         # self.last_action = 0
         # self.i_angular_error = 0
@@ -206,12 +195,10 @@ class SatelliteEnv(gym.Env):
         #
         self.scSim.InitializeSimulation()
 
-    def config(self, target_deg=0, target_angular_velocity=0, bonus_reward=0, torque=0, strict=False):
+    def config(self, target_deg=100, target_angular_velocity=10, target_torque=700):
         self.target_deg = target_deg
         self.target_angular_velocity = target_angular_velocity
-        self.bonus_reward = bonus_reward
-        self.strict = strict
-        self.torque = torque
+        self.target_torque = target_torque
 
     def reset(self, seed=None):
         """Reset the simulation."""
@@ -220,8 +207,6 @@ class SatelliteEnv(gym.Env):
 
         self.iteration = 0
         self.action_queue = [0.] * self.history_length
-        # self.state_history = [[0., 0., 0., 0.]] * self.history_length
-        # self.last_angular_velocity = 0
 
         # Run one simulation step
         self.scSim.InitializeSimulation()
@@ -234,15 +219,9 @@ class SatelliteEnv(gym.Env):
     def step(self, action):
         """Apply action and advance simulation."""
         # Apply torque action
-
-        self.action_queue.append(action[0])# * np.random.uniform(0.8, 1.2))
-        # self.last_action = action[0]  # add some noise to the action
-        applied_torque = self.action_queue.pop(0)
-        # print(f"Applied torque: {applied_torque}")
-        # TODO add disturbance to the torque
-        self.msgData.motorTorque = [applied_torque * 0.01]   # Nm  # TODO why is this rescaling required?
-        
-
+        self.action_queue.append(action[0])
+        applied_torque = (np.sum(self.action_queue[:3])+ self.action_queue.pop(0))/4
+        self.msgData.motorTorque = [applied_torque * 0.01 * np.random.uniform(0.8, 1.2)]   # Nm
         self.msg.write(self.msgData)
 
         # Step simulation
@@ -254,10 +233,6 @@ class SatelliteEnv(gym.Env):
         # Compute reward
         reward = self._compute_reward(obs)
 
-        # this can be used for fine tuning
-        good = abs(obs[0]) < self.target_deg and abs(obs[1]) < self.target_angular_velocity and abs(obs[2]) < self.torque   # TODO terminate with big plus here instead of positive reward??
-        if good:
-            reward = reward + self.bonus_reward
         done = False
         truncated = False
         if abs(obs[0]) < 1 and abs(obs[1]) < 1 and abs(obs[2]) < 0.3:
@@ -311,25 +286,11 @@ class SatelliteEnv(gym.Env):
         if attitude_error > 180:
             attitude_error = -(360 - attitude_error)
 
-        # # Combine Roll, Pitch, Yaw and Angular Velocities
-        # state_vector = np.array([
-        #     attitude_error, #* np.random.uniform(0.8, 1.2), #+ (self.last_action*3)*np.random.uniform(-5, +5),  # Yaw
-        #     yaw_w , # * np.random.uniform(0.8, 1.2), #+ (self.last_action*3)*np.random.uniform(-5, +5),     # Angular velocity z-component
-        #     self.last_angular_velocity - yaw_w, # * np.random.uniform(0.8, 1.2)  # Angular acceleration z-component
-        #     self.action_queue[-1] # * np.random.uniform(0.8, 1.2)  # Last action
-        # ])
-
-        # self.state_history.append(state_vector)
-        # self.state_history.pop(0)
-        # print(f"State history: {self.state_history}")
-        # # Create observation by flattening history
-        # obs = np.concatenate(self.state_history, dtype=np.float32)
-        # print(self.action_queue)
         obs = np.array([
-            attitude_error, #* np.random.uniform(0.8, 1.2), #+ (self.last_action*3)*np.random.uniform(-5, +5),  # Yaw
-            yaw_w , # * np.random.uniform(0.8, 1.2), #+ (self.last_action*3)*np.random.uniform(-5, +5),     # Angular velocity z-component
-            # self.last_angular_velocity - yaw_w, # * np.random.uniform(0.8, 1.2)  # Angular acceleration z-component
-            np.sum(self.action_queue) # * np.random.uniform(0.8, 1.2)  # Last action
+            attitude_error * np.random.uniform(0.8, 1.2), #+ (self.last_action*3)*np.random.uniform(-5, +5),  # Yaw
+            yaw_w * np.random.uniform(0.8, 1.2), #+ (self.last_action*3)*np.random.uniform(-5, +5),     # Angular velocity z-component
+            np.sum(self.action_queue) * 2 * np.random.uniform(0.8, 1.2),  # Last action
+            self.action_queue[-1] * np.random.uniform(0.8, 1.2)  # Last action
         ])
 
         return obs
@@ -337,18 +298,24 @@ class SatelliteEnv(gym.Env):
 
     def _compute_reward(self, obs):
         """Calculate the reward based on observation."""
-        return  calc_angle_reward(obs[0]) + calc_angular_velocity_reward(obs[1]) + calc_torque_reward(np.sum(self.action_queue))
+        return  calc_angle_reward(obs[0], self.target_deg) + \
+                calc_angular_velocity_reward(obs[1], self.target_angular_velocity) + \
+                calc_action_queue_reward(obs[3]-self.action_queue[-2], self.target_torque)  
+     #calc_torque_reward(np.sum(self.action_queue)) 
 
 
-def calc_angle_reward(angle_error):
-    return -(abs(angle_error)) * 100
+def calc_angle_reward(angle_error, factor=100):
+    return -(abs(angle_error)) * factor
 
-def calc_angular_velocity_reward(angular_velocity_error):
+def calc_angular_velocity_reward(angular_velocity_error, factor=10):
     reward = -abs(angular_velocity_error)
-    return reward * 10
+    return reward * factor
 
-def calc_torque_reward(torque_error):
-    return -abs(torque_error)* 40
+def calc_torque_reward(torque_error, factor=100):
+    return -abs(torque_error) * factor
+
+def calc_action_queue_reward(action_queue_diff, factor=700):
+    return -abs(action_queue_diff) * factor
 
 
 def calc_angle_error(angle, target):

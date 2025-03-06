@@ -11,14 +11,14 @@ a = input("Create new?")
 if a == "y":
     print("Creating new model")
     #easier to learn only rough goal, optimize in later trainings
-    env.config(target_deg=7, target_angular_velocity=5, torque=1,  bonus_reward=0)
+    env.config(target_deg=10, target_torque=70)
     model = SAC(
         "MlpPolicy",
         env,
         # # learning_rate=3e-5,  # Lower LR for stability
-        # buffer_size=10000,  # Large buffer to avoid forgetting
+        buffer_size=10000,  # Large buffer to avoid forgetting
         # learning_starts=1000,  # Ensure some exploration before updates
-        # batch_size=64,  # Small enough for stability
+        batch_size=64,  # Small enough for stability
         # tau=0.005,  # Soft update coefficient for target Q
         # gamma=0.99,  # Discount factor
         # train_freq=1,  # Update every step
@@ -32,21 +32,21 @@ if a == "y":
         # verbose=1,  # Set to 0 for no logging
     )
     model.learn(total_timesteps=5000)
-    # time.sleep(1)
-    # env.reset()
-    # env.config(target_deg=3, target_angular_velocity=3, bonus_reward=200)
-    # model.learn(total_timesteps=2000)
-    # time.sleep(1)
-    # env.reset()
-    # env.config(target_deg=0.5, target_angular_velocity=0.8, bonus_reward=200)
-    # model.learn(total_timesteps=2000)
+    time.sleep(1)
+    env.reset()
+    env.config(target_torque=70, target_deg=200)
+    model.learn(total_timesteps=5000)
+    time.sleep(1)
+    env.reset()
+    env.config(target_angular_velocity=0, target_deg=200)
+    model.learn(total_timesteps=2000)
 else:
     print("Loading existing model")
     model = SAC.load("satellite_attitude_control")
     model.set_env(env)
     time.sleep(1)
     env.reset()
-    env.config(target_deg=13, target_angular_velocity=1, strict=True, bonus_reward=0)
+    env.config(target_deg=400) # set parameters here for fine tuning
     model.learn(total_timesteps=10000)
 
 # Save the trained model
